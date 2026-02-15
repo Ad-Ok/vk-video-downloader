@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+downloads/
+*.part
+*.ytdl
+dump.html
+downloaded.txt
+urls.txt
+files.txt
+cookies.txt
+.env
