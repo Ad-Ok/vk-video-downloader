@@ -1,9 +1,11 @@
 __pycache__/
 *.pyc
 downloads/
+logs/
 *.part
 *.ytdl
 dump.html
+result.txt
 downloaded.txt
 urls.txt
 files.txt

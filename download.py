@@ -15,6 +15,7 @@ import argparse
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 
 import yt_dlp
@@ -254,6 +255,41 @@ def print_summary(results: list[DownloadResult]):
     console.print(f"\n[bold]Total:[/bold] {ok} succeeded, {fail} failed, {ok + fail} total")
 
 
+def save_log(results: list[DownloadResult], elapsed: float, log_dir: Path | None = None):
+    """Save download results to a timestamped log file."""
+    log_dir = log_dir or Path("./logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"download_{ts}.log"
+
+    ok = sum(1 for r in results if r.success)
+    fail = sum(1 for r in results if not r.success)
+
+    lines = []
+    lines.append(f"VK Video Downloader — {datetime.now().isoformat()}")
+    lines.append(f"Total: {ok} succeeded, {fail} failed, {ok + fail} total")
+    lines.append(f"Elapsed: {elapsed:.1f}s")
+    lines.append("=" * 60)
+    lines.append("")
+
+    if fail > 0:
+        lines.append("FAILED:")
+        for r in results:
+            if not r.success:
+                lines.append(f"  ✗ {r.url}  — {r.error or 'unknown'}")
+        lines.append("")
+
+    lines.append("SUCCEEDED:")
+    for r in results:
+        if r.success:
+            lines.append(f"  ✓ {r.title} ({r.entries} video(s))  {r.url}")
+    lines.append("")
+
+    log_path.write_text("\n".join(lines), encoding="utf-8")
+    console.print(f"[dim]Log saved to {log_path}[/dim]")
+    return log_path
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -406,6 +442,7 @@ def main():
     elapsed = time.time() - t0
 
     print_summary(results)
+    save_log(results, elapsed)
     console.print(f"[dim]Completed in {elapsed:.1f}s[/dim]")
 
 
