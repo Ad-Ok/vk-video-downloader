@@ -9,14 +9,14 @@ CLI-инструмент для массового скачивания виде
 pip install -r requirements.txt
 ```
 
-Также нужен **ffmpeg** (для объединения видео и аудио потоков):
+Также нужен **ffmpeg** (для объединения видео и аудио потоков) и **Node.js** ≥ 20 (для скачивания YouTube-embed видео):
 
 ```bash
 # macOS
-brew install ffmpeg
+brew install ffmpeg node
 
 # Ubuntu/Debian
-sudo apt install ffmpeg
+sudo apt install ffmpeg nodejs
 ```
 
 ## Быстрый старт
@@ -95,7 +95,19 @@ https://vkvideo.ru/video-123456_789012
 ## Что происходит под капотом
 
 1. yt-dlp извлекает прямые ссылки на видео через API VK (blob: URL игнорируется)
-2. Скачивает лучшее качество (видео + аудио отдельно)  
-3. ffmpeg объединяет в один MP4
-4. Встраивает метаданные и обложку
-5. Запоминает скачанные видео в `downloaded.txt` (пропускает при повторном запуске)
+2. Если видео — YouTube-embed, yt-dlp автоматически переходит на YouTube и решает JS challenge через Node.js
+3. Скачивает лучшее качество (видео + аудио отдельно)  
+4. ffmpeg объединяет в один MP4
+5. Встраивает метаданные и обложку
+6. Запоминает скачанные видео в `downloaded.txt` (пропускает при повторном запуске)
+7. Результаты сохраняются в `logs/`
+
+## Извлечение ссылок из HTML-дампа
+
+Если нужно скачать все видео со страницы, сохраните её HTML и извлеките ссылки:
+
+```bash
+python parse_dump.py dump.html -o urls.txt
+python parse_dump.py dump.html --owner 4725344 -o urls.txt  # только конкретный владелец
+python download.py -f urls.txt
+```

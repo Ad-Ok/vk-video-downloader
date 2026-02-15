@@ -12,13 +12,14 @@ Usage:
 """
 
 import argparse
+import http.cookiejar
 import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 from urllib.error import URLError
 
 import yt_dlp
@@ -85,6 +86,7 @@ def build_ydl_opts(
         "noprogress": True,  # we use our own progress bar
         "merge_output_format": "mp4",
         "postprocessors": [],
+        "js_runtimes": {"node": {}},  # needed for YouTube JS challenge solving
     }
 
     # --- Cookies ---
@@ -144,11 +146,31 @@ _YT_RE = re.compile(
 )
 
 
-def _extract_youtube_url(vk_url: str) -> str | None:
-    """Fetch VK page HTML and look for an embedded YouTube link."""
+def _extract_youtube_url(vk_url: str, ydl_opts: dict | None = None) -> str | None:
+    """Fetch VK page HTML and look for an embedded YouTube link.
+    
+    Uses cookies from yt-dlp config (browser or file) so VK returns
+    the real page instead of a login redirect.
+    """
     try:
-        req = Request(vk_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urlopen(req, timeout=15) as resp:
+        # Build a cookie jar from the same source yt-dlp uses
+        cj = http.cookiejar.MozillaCookieJar()
+        if ydl_opts:
+            cookie_file = ydl_opts.get("cookiefile")
+            if cookie_file and Path(cookie_file).exists():
+                cj.load(cookie_file, ignore_discard=True, ignore_expires=True)
+            elif ydl_opts.get("cookiesfrombrowser"):
+                # Let yt-dlp extract cookies to a temp jar
+                try:
+                    with yt_dlp.YoutubeDL({"quiet": True, "cookiesfrombrowser": ydl_opts["cookiesfrombrowser"]}) as _ydl:
+                        _ydl.cookiejar  # triggers cookie loading
+                        cj = _ydl.cookiejar
+                except Exception:
+                    pass
+
+        opener = build_opener(HTTPCookieProcessor(cj))
+        req = Request(vk_url, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"})
+        with opener.open(req, timeout=15) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
         m = _YT_RE.search(html)
         if m:
@@ -176,13 +198,27 @@ def download_url(url: str, ydl_opts: dict) -> DownloadResult:
     opts = {**ydl_opts, "logger": InfoLogger()}
     actual_url = url  # may change to YouTube URL on fallback
 
+    # --- Check archive: skip if already downloaded ---
+    archive_path = ydl_opts.get("download_archive")
+    if archive_path and Path(archive_path).exists():
+        archive_ids = set(Path(archive_path).read_text(encoding="utf-8").splitlines())
+        # Extract VK video ID from URL to check against archive
+        vk_match = re.search(r'/video(-?\d+_\d+)', url)
+        if vk_match:
+            vk_id = f"vk {vk_match.group(1)}"
+            if vk_id in archive_ids:
+                result.success = True
+                result.title = f"[already downloaded] {url}"
+                result.entries = 1
+                return result
+
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             # Extract info first (no download) to get metadata
             info = ydl.extract_info(url, download=False)
             if info is None:
                 # Fallback: check if VK page embeds a YouTube video
-                yt_url = _extract_youtube_url(url)
+                yt_url = _extract_youtube_url(url, ydl_opts)
                 if yt_url:
                     actual_url = yt_url
                     result.url = f"{url} -> {yt_url}"
@@ -210,7 +246,7 @@ def download_url(url: str, ydl_opts: dict) -> DownloadResult:
     except yt_dlp.utils.DownloadError as e:
         # Fallback: try YouTube extraction on download errors too
         if "vkvideo.ru" in url or "vk.com" in url:
-            yt_url = _extract_youtube_url(url)
+            yt_url = _extract_youtube_url(url, ydl_opts)
             if yt_url:
                 try:
                     result.url = f"{url} -> {yt_url}"
