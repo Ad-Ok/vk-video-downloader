@@ -12,11 +12,14 @@ Usage:
 """
 
 import argparse
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 import yt_dlp
 from rich.console import Console
@@ -133,6 +136,28 @@ class DownloadResult:
         self.entries: int = 0  # number of videos (>1 for playlists)
 
 
+# Patterns for YouTube URLs embedded in VK pages
+_YT_RE = re.compile(
+    r'(?:https?://)?(?:www\.)?'
+    r'(?:youtube\.com/(?:watch\?v=|embed/|v/)|youtu\.be/)'
+    r'([\w-]{11})'
+)
+
+
+def _extract_youtube_url(vk_url: str) -> str | None:
+    """Fetch VK page HTML and look for an embedded YouTube link."""
+    try:
+        req = Request(vk_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        m = _YT_RE.search(html)
+        if m:
+            return f"https://www.youtube.com/watch?v={m.group(1)}"
+    except (URLError, OSError):
+        pass
+    return None
+
+
 def download_url(url: str, ydl_opts: dict) -> DownloadResult:
     """Download a single URL (may be a video, playlist, or channel)."""
     result = DownloadResult(url)
@@ -149,14 +174,25 @@ def download_url(url: str, ydl_opts: dict) -> DownloadResult:
             result.error = msg
 
     opts = {**ydl_opts, "logger": InfoLogger()}
+    actual_url = url  # may change to YouTube URL on fallback
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             # Extract info first (no download) to get metadata
             info = ydl.extract_info(url, download=False)
             if info is None:
-                result.error = "Could not extract video info"
-                return result
+                # Fallback: check if VK page embeds a YouTube video
+                yt_url = _extract_youtube_url(url)
+                if yt_url:
+                    actual_url = yt_url
+                    result.url = f"{url} -> {yt_url}"
+                    info = ydl.extract_info(yt_url, download=False)
+                    if info is None:
+                        result.error = "Could not extract video info (YouTube fallback also failed)"
+                        return result
+                else:
+                    result.error = "Could not extract video info"
+                    return result
 
             # Check if it's a playlist / channel
             if "entries" in info:
@@ -167,11 +203,27 @@ def download_url(url: str, ydl_opts: dict) -> DownloadResult:
                 result.entries = 1
                 result.title = info.get("title", url)
 
-            # Now download
-            ydl.download([url])
+            # Download
+            ydl.download([actual_url])
             result.success = True
 
     except yt_dlp.utils.DownloadError as e:
+        # Fallback: try YouTube extraction on download errors too
+        if "vkvideo.ru" in url or "vk.com" in url:
+            yt_url = _extract_youtube_url(url)
+            if yt_url:
+                try:
+                    result.url = f"{url} -> {yt_url}"
+                    with yt_dlp.YoutubeDL(opts) as ydl2:
+                        info = ydl2.extract_info(yt_url, download=False)
+                        if info:
+                            result.title = info.get("title", yt_url)
+                            result.entries = 1
+                            ydl2.download([yt_url])
+                            result.success = True
+                            return result
+                except Exception:
+                    pass
         result.error = str(e)
     except Exception as e:
         result.error = str(e)
